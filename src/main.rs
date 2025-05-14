@@ -1,23 +1,26 @@
 use scrap::{Capturer, Display};
-use std::io::Write;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 fn main() {
     let display = Display::primary().expect("Couldn't find primary display.");
     let mut capturer = Capturer::new(display).expect("Couldn't begin capture.");
+    let (width, height) = (capturer.width(), capturer.height());
 
-    let width = capturer.width();
-    let height = capturer.height();
     let fps = 30;
-    let duration_seconds = 5;
+    let duration_seconds = 10;
+    let frame_size = width * height * 3;
 
-    println!("Capturing {}x{} at {} FPS for {} seconds...", width, height, fps, duration_seconds);
+    println!("Capturing screen + audio on Windows for {} seconds...", duration_seconds);
 
-    let frame_size = width * height * 3; // 3 bytes per pixel (RGB)
+    // Replace with your actual device from `ffmpeg -list_devices true -f dshow -i dummy`
+    let audio_device = "Microfone (Steam Streaming Microphone)";
 
-    // Spawn ffmpeg subprocess
+    // Spawn ffmpeg
     let mut ffmpeg = Command::new("ffmpeg")
         .args([
             "-y",
@@ -26,8 +29,16 @@ fn main() {
             "-s", &format!("{}x{}", width, height),
             "-r", &fps.to_string(),
             "-i", "-",
+
+            // Audio input via dshow
+            "-f", "dshow",
+            "-i", &format!("audio={}", audio_device),
+
+            // Output
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-shortest", // Stop when shortest input ends
             "output.mp4",
         ])
         .stdin(Stdio::piped())
@@ -36,13 +47,13 @@ fn main() {
 
     let mut stdin = ffmpeg.stdin.take().expect("Failed to open ffmpeg stdin");
 
+    // Start writing frames
     let start = Instant::now();
     let frame_duration = Duration::from_secs_f32(1.0 / fps as f32);
 
     while start.elapsed().as_secs_f32() < duration_seconds as f32 {
         match capturer.frame() {
             Ok(frame) => {
-                // Convert from BGRA to RGB
                 let mut rgb = Vec::with_capacity(frame_size);
                 for i in 0..(width * height) {
                     let i = i * 4;
@@ -54,9 +65,8 @@ fn main() {
                     rgb.push(b);
                 }
 
-                // Write to ffmpeg stdin
                 if let Err(e) = stdin.write_all(&rgb) {
-                    eprintln!("Failed to write frame to ffmpeg: {}", e);
+                    eprintln!("Error writing to ffmpeg: {}", e);
                     break;
                 }
 
@@ -73,13 +83,12 @@ fn main() {
         }
     }
 
-    // Close stdin so ffmpeg knows we're done
-    drop(stdin);
-
+    drop(stdin); // Close ffmpeg stdin so it finalizes
     let status = ffmpeg.wait().expect("Failed to wait on ffmpeg");
+
     if status.success() {
-        println!("Video saved to output.mp4");
+        println!("✅ Recording complete: output.mp4");
     } else {
-        eprintln!("ffmpeg exited with status: {:?}", status.code());
+        eprintln!("ffmpeg exited with error: {:?}", status.code());
     }
 }
