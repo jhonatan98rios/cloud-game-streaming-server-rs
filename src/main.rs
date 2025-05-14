@@ -1,3 +1,5 @@
+mod encoder;
+
 use anyhow::{Context, Result};
 use log::{error, info};
 use scrap::{Capturer, Display};
@@ -7,6 +9,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use crate::encoder::detect_encoder;
 
 const DURATION_SECONDS: u64 = 10;
 const FPS: u32 = 30;
@@ -14,6 +17,9 @@ const FPS: u32 = 30;
 fn main() -> Result<()> {
     env_logger::init();
     info!("🎬 Starting screen and audio capture...");
+
+    let encoder = detect_encoder()?;
+    info!("🎞️ Using encoder: {:?}", encoder);
 
     let mut capturer = init_capturer()?;
     let (width, height) = (capturer.width(), capturer.height());
