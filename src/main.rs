@@ -1,79 +1,85 @@
 use scrap::{Capturer, Display};
-use std::{
-    fs::{self},
-    io::ErrorKind::WouldBlock,
-    thread,
-    time::{Duration, Instant},
-    process::Command,
-};
-use image::{ImageBuffer, Rgba};
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn main() {
     let display = Display::primary().expect("Couldn't find primary display.");
     let mut capturer = Capturer::new(display).expect("Couldn't begin capture.");
 
-    let (width, height) = (capturer.width(), capturer.height());
-    println!("Capturing video at resolution {}x{}", width, height);
-
-    // Create output folder for frames
-    let _ = fs::create_dir_all("frames");
-
-    let start = Instant::now();
-    let mut frame_count = 0;
-    let target_duration = Duration::from_secs(3); // 10 seconds
+    let width = capturer.width();
+    let height = capturer.height();
     let fps = 30;
-    let frame_delay = Duration::from_millis(1000 / fps);
+    let duration_seconds = 5;
 
-    while start.elapsed() < target_duration {
-        match capturer.frame() {
-            Ok(frame) => {
-                let mut img_buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width as u32, height as u32);
-                for (i, pixel) in img_buf.pixels_mut().enumerate() {
-                    let i = i * 4;
-                    let b = frame[i];
-                    let g = frame[i + 1];
-                    let r = frame[i + 2];
-                    *pixel = Rgba([r, g, b, 255]);
-                }
+    println!("Capturing {}x{} at {} FPS for {} seconds...", width, height, fps, duration_seconds);
 
-                let filename = format!("frames/frame_{:05}.bmp", frame_count);
-                img_buf.save(&filename).expect("Failed to save frame");
-                frame_count += 1;
+    let frame_size = width * height * 3; // 3 bytes per pixel (RGB)
 
-                thread::sleep(frame_delay);
-            }
-            Err(ref e) if e.kind() == WouldBlock => {
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-            Err(e) => panic!("Capture error: {}", e),
-        }
-    }
-
-    println!("Finished capturing {} frames. Encoding video...", frame_count);
-
-    // Call ffmpeg to generate video
-    let output = Command::new("ffmpeg")
+    // Spawn ffmpeg subprocess
+    let mut ffmpeg = Command::new("ffmpeg")
         .args([
-            "-y", // Overwrite output
-            "-framerate", &fps.to_string(),
-            "-i", "frames/frame_%05d.bmp",
+            "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-s", &format!("{}x{}", width, height),
+            "-r", &fps.to_string(),
+            "-i", "-",
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "output.mp4",
         ])
-        .output()
-        .expect("Failed to execute ffmpeg");
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("Failed to start ffmpeg");
 
-    if output.status.success() {
-        println!("Video saved as output.mp4");
-    } else {
-        eprintln!(
-            "ffmpeg failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let mut stdin = ffmpeg.stdin.take().expect("Failed to open ffmpeg stdin");
+
+    let start = Instant::now();
+    let frame_duration = Duration::from_secs_f32(1.0 / fps as f32);
+
+    while start.elapsed().as_secs_f32() < duration_seconds as f32 {
+        match capturer.frame() {
+            Ok(frame) => {
+                // Convert from BGRA to RGB
+                let mut rgb = Vec::with_capacity(frame_size);
+                for i in 0..(width * height) {
+                    let i = i * 4;
+                    let b = frame[i];
+                    let g = frame[i + 1];
+                    let r = frame[i + 2];
+                    rgb.push(r);
+                    rgb.push(g);
+                    rgb.push(b);
+                }
+
+                // Write to ffmpeg stdin
+                if let Err(e) = stdin.write_all(&rgb) {
+                    eprintln!("Failed to write frame to ffmpeg: {}", e);
+                    break;
+                }
+
+                thread::sleep(frame_duration);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            Err(e) => {
+                eprintln!("Capture error: {}", e);
+                break;
+            }
+        }
     }
 
-    // Optional: Clean up frames
-    let _ = fs::remove_dir_all("frames");
+    // Close stdin so ffmpeg knows we're done
+    drop(stdin);
+
+    let status = ffmpeg.wait().expect("Failed to wait on ffmpeg");
+    if status.success() {
+        println!("Video saved to output.mp4");
+    } else {
+        eprintln!("ffmpeg exited with status: {:?}", status.code());
+    }
 }
