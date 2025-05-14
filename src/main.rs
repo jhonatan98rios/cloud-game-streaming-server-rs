@@ -55,9 +55,18 @@ fn start_ffmpeg(width: usize, height: usize) -> Result<Child> {
             "-i", "-",
             "-f", "dshow",
             "-i", &format!("audio={}", audio_device),
+            
+            // Video compression settings
             "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "28",
             "-pix_fmt", "yuv420p",
+
+            // Audio compression
             "-c:a", "aac",
+            "-b:a", "128k",
+
+            // Output settings
             "-t", &DURATION_SECONDS.to_string(),
             // "-shortest",
             "output.mp4",
