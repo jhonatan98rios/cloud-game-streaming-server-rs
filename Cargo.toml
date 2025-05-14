@@ -1,0 +1,8 @@
+[package]
+name = "cloud_game_streaming_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+scrap = "0.5"
+image = "0.25.6"
